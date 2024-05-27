@@ -1,0 +1,1045 @@
+---
+title: "ABM with adapted environmental awareness"
+author: "Lina Walkowiak"
+date: "2024-04-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Set global chunk options for knitr
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# Set up
+
+```{r}
+pacman::p_load(tidyverse, dplyr, Replicate, MASS, igraph, ggplot2, hrbrthemes, ggrepel, ggtext)
+
+```
+
+# Load survey data
+
+```{r}
+data <- read.csv("/Users/lina/Documents/4thsemester/dynamics/all_things_exam/data1/dataset.csv")
+```
+
+# Preprocessing of survey data
+
+```{r}
+# Exclude specific columns and omit rows with missing values
+df <- data[,-c(1,2, 6, 34:43) ]
+df <- na.omit(df)
+
+# Remove categorical columns
+df <- df[,-c(1, 2, 3, 4)]
+
+# Determine whether more plant or dairy milk is consumed
+df$milk <- ifelse(df$plantmilk_week > df$dairymilk_week, 1, 0)
+
+# Activate habit effect if no consumption
+df$habit_start <- ifelse(df$plantmilk_week <= 0 | df$dairymilk_week <= 0, 1, 0)
+
+# Keep milk consumption values in deciliters
+df$dairymilk_week <- df$dairymilk_week
+df$plantmilk_week <- df$plantmilk_week
+
+# Calculate total consumption
+total_dairy_consumed_df <- sum(df$dairymilk_week)
+total_vegan_consumed_df <- sum(df$plantmilk_week)
+
+# Print total consumption values
+print(total_dairy_consumed_df)
+print(total_vegan_consumed_df)
+
+# Calculate mean dairy consumption
+mean_all_milk <- mean(total_dairy_consumed_df)
+
+# Adjust budget based on mean budget
+mean_budget <- mean(df$budget)
+df$budget <- ifelse(df$budget < mean_budget, 
+                    1 + (mean_budget - df$budget) / mean_budget, 
+                    1 - (df$budget - mean_budget) / mean_budget)
+
+# Normalize budget values to a range of 0.5 to 1.5
+min_val <- min(df$budget)
+max_val <- max(df$budget)
+normalized_spending <- (df$budget - min_val) / (max_val - min_val) * 1 + 0.5
+df$budget <- normalized_spending
+
+
+```
+
+# More preprocessing
+
+```{r}
+# Select specific columns for agent generation
+selected_columns <- df[, c(1, 4:27)]
+
+# Create a new dataframe for additional agents
+new_df <- data.frame(matrix(nrow = 36, ncol = length(selected_columns)))
+
+# Copy column names from selected columns
+colnames(new_df) <- colnames(selected_columns)
+
+# Sample values for each column based on original dataset frequencies
+for (col in 1:length(selected_columns)) {
+  value_counts <- table(selected_columns[[col]])
+  new_df[, col] <- sample(names(value_counts), size = 36, replace = TRUE, prob = value_counts)
+}
+
+# Sample milk consumption and budget values for new agents
+new_df$dairymilk_week <- sample(df$dairymilk_week, 36 , replace = TRUE)
+new_df$plantmilk_week <- sample(df$plantmilk_week, 36, replace = TRUE)
+new_df$budget <- sample(df$budget, 36, replace = TRUE)
+
+# Define plant-based or dairy milk drinkers
+new_df$milk <- ifelse(new_df$plantmilk_week > new_df$dairymilk_week, 1, 0)
+
+# Activate habit effect for new agents
+new_df$habit_start <- ifelse(new_df$plantmilk_week <= 0.1 | new_df$dairymilk_week <= 0, 1, 0)
+
+# Combine original and new agents
+agents <- rbind(df, new_df)
+agents[] <- lapply(agents, as.numeric)
+
+# Initialize memory and interaction probability columns
+agents$memory <- vector("list", nrow(agents))
+agents$interaction_prob <- runif(nrow(agents), min = 0.4, max = 0.9)
+
+# Ensure very low perception values are not disregarded
+perception_cols <- c("taste_dairy", "health_dairy","environment_dairy", "ethics_dairy", "access_dairy", "price_dairy","taste_vegan", "health_vegan", "environment_vegan", "ethics_vegan","access_vegan", "price_vegan", "weight_taste", "weight_health", "weight_ethics", "weight_access", "weight_price", "weight_environment", "habits", "peer_influence", "norm_influence", "environmental_impact")
+agents[,perception_cols][agents[,perception_cols] == 0] <- 0.00
+
+```
+
+# Network
+
+```{r}
+# Read node and edge data for the social network
+nodes <- read_csv('/Users/lina/Documents/aarhus_student_network/nodes.csv')
+edges <- read_csv('/Users/lina/Documents/aarhus_student_network/edges.csv')
+
+# Create graph object
+graph_agents <- graph_from_data_frame(d = edges, vertices = nodes, directed = FALSE)
+
+# Simplify graph by removing multiple edges and loops
+graph_agents <- simplify(graph_agents, remove.multiple = TRUE, remove.loops = TRUE, edge.attr.comb=list(weight="sum"))
+
+# Get vegan nodes
+vegan_nodes <- agents[agents$milk == 1, "name"]
+
+# Style the graph
+deg <- degree(graph_agents, mode="all")
+V(graph_agents)$size <- deg / 1.1
+V(graph_agents)$frame.color <- "white"
+V(graph_agents)$color <- '#33576E'
+
+# Highlight vegan nodes
+V(graph_agents)[c("U42", "U76", "U23", "U107", "U1", "U124", "U142","U126","U69","U72","U59",  "U139","U79","U140", "U65" )]$color <- '#BBCF9B'
+V(graph_agents)$label <- ""
+
+# Define layout for the graph
+layout <- layout.fruchterman.reingold(graph_agents)
+
+# Define colors for non-vegan and vegan diets
+non_vegan_color <- '#33576E'
+vegan_color <- '#BBCF9B'
+
+# Plot the graph with legend and title
+plot(graph_agents,
+     layout = layout,
+     edge.arrow.size = 0.1,
+     vertex.dist = 1 / edge_attr(graph_agents)$weight,
+     main = "Social Network of AU Students")
+
+# Add legend to the graph
+legend("bottomleft",
+       legend = c("Dairy", "Plant-based"),
+       fill = c(non_vegan_color, vegan_color),
+       title = "Milk consumed",
+       border = FALSE)
+
+
+
+```
+
+# Combine network data and agents
+
+```{r}
+# Random permutation of numbers for agent indices
+random_indices <- sample(0:60, replace = FALSE)
+
+# Assign indices to agents
+agents$`# index` <- random_indices
+
+# Combine agents with node data
+agents <- left_join(agents, nodes, by = '# index')
+
+```
+
+num_agents <- 61
+
+# Utility functions
+Define a function that calculates the utility of the two products for each agent. 
+```{r}
+# Utility function for vegan milk
+utility_vegan <- function(agent_row) {
+  # Calculate the utility for the current agent for vegan milk
+  utility_vegan <- agent_row$weight_price * price_diff * scale_price * agent_row$budget +
+                   agent_row$weight_ethics * agent_row$ethics_vegan +
+                   agent_row$weight_health * agent_row$health_vegan +
+                   agent_row$weight_environment * agent_row$environment_vegan +
+                   agent_row$weight_taste * agent_row$taste_vegan
+  # Add a factor to account for the resistance to change
+  utility_vegan <- utility_vegan + agent_row$change * scale_change
+  return(utility_vegan)
+}
+
+# Utility function for dairy milk
+utility_dairy <- function(agent_row) {
+  # Calculate the utility for the current agent for dairy milk
+  utility_dairy <- agent_row$weight_price * price_diff * (-1) * scale_price * agent_row$budget +
+                   agent_row$weight_ethics * agent_row$ethics_dairy +
+                   agent_row$weight_health * agent_row$health_dairy +
+                   agent_row$weight_environment * agent_row$environment_dairy +
+                   agent_row$weight_taste * agent_row$taste_dairy
+  return(utility_dairy)
+}
+```
+
+# Decision function
+The decision function compares the utility of the two products and choses the one with higher utility. It is ensured that in the first iteration, the agent chooses the inital milk. 
+
+```{r}
+decision <- function(agent_row) {
+  utility_vegan_value <- utility_vegan(agent_row)
+  utility_dairy_value <- utility_dairy(agent_row)
+  
+  # Check memory to determine if agent has a preference from previous interactions
+  if (is.null(agent_row$memory) || length(agent_row$memory) == 0) {
+    # If no memory, base decision on initial milk preference
+    decision <- ifelse(agent_row$milk == 0, 0, 1)  # 1 for vegan, 0 for dairy
+  } else {
+    # Otherwise, base decision on calculated utility values
+    decision <- ifelse(utility_vegan_value > utility_dairy_value, 1, 0)  # 1 for vegan, 0 for dairy
+  }
+  
+  return(decision)
+}
+
+```
+
+# Norm function
+Modulate the agent's utility based on susceptibility towards social norms.
+
+```{r}
+
+norm_factor <- function(agent_row) {
+  condition <- agents$utility_vegan > agents$utility_dairy
+  count_vegan_utility <- sum(condition)
+  
+  # Adjust utility based on the number of agents choosing vegan
+  if (count_vegan_utility < 61 / 2) {
+    agent_row$utility_dairy <- agent_row$utility_dairy + agent_row$norm_influence * scale_norm
+  } else {
+    agent_row$utility_vegan <- agent_row$utility_vegan + agent_row$norm_influence * scale_norm
+  }
+  
+  return(agent_row)
+}
+
+```
+
+
+# Social iteration function
+Sample a peer from the network based on the interaction probability. 
+
+```{r}
+sample_peer <- function(agent_row) {
+  node_index <- agent_row$name
+  interaction_prob <- agent_row$interaction_prob
+  all_neighbors <- neighbors(graph_agents, node_index)
+  all_neighbors <- as.vector(all_neighbors)
+  
+  # Depending on the probability of interaction, sample a neighbor
+  if (runif(1) <= interaction_prob) {
+    sampled_neighbor <- sample(all_neighbors, 1, replace = TRUE)
+    agent_row$sampled_agent <- sampled_neighbor
+  } else {
+    agent_row$sampled_agent <- NA  # No interaction if probability condition fails
+  }
+  
+  return(agent_row)
+}
+```
+
+# Social influence function
+Adapt the sampled peer's utility to an extent that is based on the agent's peer susceptibility.
+```{r}
+peer_factor <- function(agent_row, agents, scale_peer) {
+  sampled_peer <- agent_row$sampled_agent
+  
+  # Check if a peer was sampled
+  if (is.na(sampled_peer)) {
+    return(agent_row)
+  } else {
+    peer <- agents[agents$`# index` == sampled_peer, ]
+    
+    # Adjust utility based on peer's decision
+    if (nrow(peer) == 1) {
+      if (peer$utility_dairy >= peer$utility_vegan) {
+        agent_row$utility_dairy <- agent_row$utility_dairy + agent_row$peer_influence * scale_peer_decision
+      } else {
+        agent_row$utility_vegan <- agent_row$utility_vegan + agent_row$peer_influence * scale_peer_decision
+      }
+    }
+    
+    return(agent_row)
+  }
+}
+```
+
+
+# Habit function
+Influence utility based on past decisions to an extent based on the agent's habit susceptibility. 
+```{r}
+habit_effect <- function(agent_row) {
+  habit_weight <- agent_row$habits
+  memory <- agent_row$memory
+  
+  # For initial round, the initial agent characteristics are used
+  if (length(memory) == 0) {
+    if (agent_row$habit_start == 1) {
+      if (agent_row$milk == 1) {
+        # habit for vegan milk
+        agent_row$utility_vegan <- agent_row$utility_vegan + habit_weight * scale_habit
+      } else {
+        # habit for dairy milk
+        agent_row$utility_dairy <- agent_row$utility_dairy + habit_weight * scale_habit
+      }
+    }
+    # check memory: the threshold is 4 consecutive consumptions of the same
+  } else if (length(memory) < 4 || !all(memory[(length(memory) - 3):length(memory)] == memory[length(memory)])) {
+    agent_row$utility_dairy <- agent_row$utility_dairy 
+    agent_row$utility_vegan <- agent_row$utility_vegan 
+  } else {
+    if (memory[length(memory)] == 0) {
+      agent_row$utility_dairy <- agent_row$utility_dairy + habit_weight * scale_habit
+    } else {
+      agent_row$utility_vegan <- agent_row$utility_vegan + habit_weight * scale_habit
+    }
+  }
+  
+  return(c(agent_row$utility_dairy, agent_row$utility_vegan))
+}
+```
+
+# Global parameters
+Have been tested in a range of values to ensure it makes sense!
+```{r}
+scale_price <- 0.08
+scale_habit <- 2
+scale_norm <- 2
+scale_peer <- 1.5
+scale_peer_decision <- 3
+tradition_dairy <- 0
+tradition_vegan <- -0.0
+agents$change <- -(1 - agents$change)
+scale_change <- 2.2
+
+kr_vegan <- 14
+kr_dairy <- 14
+price_diff <- kr_dairy - kr_vegan
+
+```
+
+# Set up for the simulation
+
+```{r}
+# Number of agents
+num_agents <- 61
+# Number of iterations
+num_iterations <- 293 # Until 2030
+
+# Lists to store mean values and other metrics
+mean_values <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans <- c()
+price_development <- c()
+utility_vegan_list <- vector("list", nrow(agents))
+utility_dairy_list <- vector("list", nrow(agents))
+
+# Initialize the memory column
+agents$memory <- vector("list", nrow(agents))
+
+# Copy initial agents
+initial_agents <- agents
+```
+
+# Iterate over functions
+
+## 1. +2% taxes
+
+```{r}
+counter <- 0
+
+for (iteration in 1:num_iterations) {
+  counter <- counter + 1
+    
+  # ADD INTERVENTION HERE
+  if (counter == 32){ # 2025, where the laws are supposed to be applied 
+    kr_dairy <- kr_dairy + 0.02 * kr_dairy
+  }
+    
+  # Get price difference  
+  price_diff <-  kr_dairy - kr_vegan
+  price_development <- c(price_development, price_diff)
+  
+  # DEFINE MEANS HERE SO THE UPDATED ONES ARE TAKEN
+  mean_price <- mean(agents$weight_price)
+  mean_health <- mean(agents$weight_health)
+  mean_ethics <- mean(agents$weight_ethics)
+  mean_environment <- mean(agents$weight_environment)
+  mean_taste <- mean(agents$weight_taste)
+   
+  #### FUNCTIONS 
+    
+  # Utility function for vegan and dairy
+  for (i in 1:nrow(agents)) {
+    agents$utility_dairy[i] <- utility_dairy(agents[i, ])
+    agents$utility_vegan[i] <- utility_vegan(agents[i, ])
+  }
+
+  # Habit function
+  for (i in 1:nrow(agents)) {
+    # Call habit_effect function with memory_habit column
+    agent_utilities <- habit_effect(agents[i, ])
+    # Update utility_dairy and utility_vegan columns
+    agents[i, c("utility_dairy", "utility_vegan")] <- agent_utilities[1:2]
+  }
+
+  # Peer function: sampling one neighbor from the network
+  for (i in 1:nrow(agents)) {
+    # get the current agent row
+    agent_row <- agents[i, ]
+    
+    # sample_peer
+    modified_agent_row <- sample_peer(agent_row)
+    
+    # assign agent to original data frame 
+    agents[i, "sampled_agent"] <- modified_agent_row$sampled_agent
+  }
+
+  # Peer function: altering perceptions of products based on means 
+  for (i in 1:nrow(agents)) {
+    agents[i, ] <- peer_factor(agents[i, ], agents, scale_peer)
+  }
+  
+  # Norm function: altering perceptions of products based on means
+  for (i in 1:nrow(agents)) {
+    agents[i, ] <- norm_factor(agents[i, ])
+  }
+  
+  # Store utilities in list: 
+  for (i in 1:nrow(agents)) {
+    # Store utility values in lists
+    utility_dairy_list[[i]] <- c(utility_dairy_list[[i]], agents$utility_dairy[i])
+    utility_vegan_list[[i]] <- c(utility_vegan_list[[i]], agents$utility_vegan[i])
+  }
+
+  # Decision function based on utilities and add to memory 
+  for (i in 1:nrow(agents)) {
+    # Decision using the decision function
+    if (iteration == 1) {
+      agents$decision[i] <- agents$milk[i]
+    } else {
+      agents$decision[i] <- decision(agents[i, ])
+    }
+    
+    # Append decision to memory
+    agents$memory[[i]] <- c(agents$memory[[i]], agents$decision[i])
+  }
+  
+  # Count vegans
+  num_vegans <- c(num_vegans, sum(agents$decision))
+}
+
+
+### RESULTS FROM 1 RUN
+# Save results from this simulation with new names 
+agent_1 <- agents
+mean_values_1 <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans_1 <- num_vegans
+price_development_1 <- price_development
+utility_vegan_list_1 <- utility_vegan_list
+utility_dairy_list_1 <- utility_dairy_list
+```
+
+## 2. +4%
+
+```{r}
+# Reset 
+mean_values <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans <- c()
+price_development <- c()
+utility_vegan_list <- vector("list", nrow(agents))
+utility_dairy_list <- vector("list", nrow(agents))
+agents$memory <- vector("list", nrow(agents))
+initial_agents <- agents
+kr_dairy <- 14
+```
+
+## Run
+```{r}
+counter <- 0
+
+for (iteration in 1:num_iterations) {
+  counter <- counter + 1
+    
+  ### ADD INTERVENTION HERE 
+  if (counter ==32){ # 2025, where the laws are supposed to be applied 
+   kr_dairy <- kr_dairy +0.04* kr_dairy
+  }
+    
+  # Get price difference  
+  price_diff <-  kr_dairy - kr_vegan
+  price_development <- c(price_development, price_diff)
+  
+  # DEFINE MEANS HERE SO THE UPDATED ONCE ARE TAKEN
+  mean_price <- mean(agents$weight_price)
+  mean_health <- mean(agents$weight_health)
+  mean_ethics <- mean(agents$weight_ethics)
+  mean_environment <- mean(agents$weight_environment)
+  mean_taste <- mean(agents$weight_taste)
+
+   
+  #### FUNCTIONS 
+    
+  # Utility function for vegan and dairy
+  for (i in 1:nrow(agents)) {
+    agents$utility_dairy[i] <- utility_dairy(agents[i, ])
+    agents$utility_vegan[i] <- utility_vegan(agents[i, ])
+  }
+
+  # Habit function
+  for (i in 1:nrow(agents)) {
+    # Call habit_effect function with memory_habit column
+    agent_utilities <- habit_effect(agents[i, ])
+    # Update utility_dairy and utility_vegan columns
+    agents[i, c("utility_dairy", "utility_vegan")] <- agent_utilities[1:2]
+  }
+
+  # Peer function: sampling one neighbor from the network
+  for (i in 1:nrow(agents)) {
+    # get the current agent row
+    agent_row <- agents[i, ]
+    
+    # sample_peer
+    modified_agent_row <- sample_peer(agent_row)
+    
+    # assign agent to original data frame 
+    agents[i, "sampled_agent"] <- modified_agent_row$sampled_agent
+  }
+
+  # Peer function: altering perceptions of products based on means 
+   for (i in 1:nrow(agents)) {
+  agents[i, ] <- peer_factor(agents[i, ], agents, scale_peer)
+   }
+  
+  
+ 
+  # Norm function: altering perceptions of products based on means
+  for (i in 1:nrow(agents)) {
+    agents[i, ] <- norm_factor(agents[i, ])
+  }
+  
+  # Store utilities in list: 
+    for (i in 1:nrow(agents)) {
+    # Store utility values in lists
+    utility_dairy_list[[i]] <- c(utility_dairy_list[[i]], agents$utility_dairy[i])
+    utility_vegan_list[[i]] <- c(utility_vegan_list[[i]], agents$utility_vegan[i])
+  }
+
+  # Decision function based on utilities and add to memory 
+  for (i in 1:nrow(agents)) {
+    # Decision using the decision function
+    if (iteration == 1) {
+      agents$decision[i] <- agents$milk[i]
+    } else {
+      agents$decision[i] <- decision(agents[i, ])
+    }
+  }
+  
+  # Count vegans
+  num_vegans <- c(num_vegans, sum(agents$decision))
+}
+
+
+### RESULTS FROM 2nd RUN
+# Save results from this simulation with new names 
+agent_2 <- agents
+mean_values_2 <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans_2 <- num_vegans
+price_development_2 <- price_development
+utility_vegan_list_2 <- utility_vegan_list
+utility_dairy_list_2 <- utility_dairy_list
+```
+
+# + 6%
+
+```{r}
+# Reset
+mean_values <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans <- c()
+price_development <- c()
+utility_vegan_list <- vector("list", nrow(agents))
+utility_dairy_list <- vector("list", nrow(agents))
+agents$memory <- vector("list", nrow(agents))
+initial_agents <- agents
+kr_dairy <- 14
+```
+
+# Run
+```{r}
+
+counter <- 0
+for (iteration in 1:num_iterations) {
+  counter <- counter + 1
+    
+  ### ADD INTERVENTION HERE 
+  if (counter ==32){ # 2025, where the laws are supposed to be applied 
+   kr_dairy <- kr_dairy +0.06* kr_dairy
+  }
+    
+  # Get price difference  
+  price_diff <-  kr_dairy - kr_vegan
+  price_development <- c(price_development, price_diff)
+  
+  # DEFINE MEANS HERE SO THE UPDATED ONCE ARE TAKEN
+  mean_price <- mean(agents$weight_price)
+  mean_health <- mean(agents$weight_health)
+  mean_ethics <- mean(agents$weight_ethics)
+  mean_environment <- mean(agents$weight_environment)
+  mean_taste <- mean(agents$weight_taste)
+
+   
+  #### FUNCTIONS 
+    
+  # Utility function for vegan and dairy
+  for (i in 1:nrow(agents)) {
+    agents$utility_dairy[i] <- utility_dairy(agents[i, ])
+    agents$utility_vegan[i] <- utility_vegan(agents[i, ])
+  }
+
+  # Habit function
+  for (i in 1:nrow(agents)) {
+    # Call habit_effect function with memory_habit column
+    agent_utilities <- habit_effect(agents[i, ])
+    # Update utility_dairy and utility_vegan columns
+    agents[i, c("utility_dairy", "utility_vegan")] <- agent_utilities[1:2]
+  }
+
+  # Peer function: sampling one neighbor from the network
+  for (i in 1:nrow(agents)) {
+    # get the current agent row
+    agent_row <- agents[i, ]
+    
+    # sample_peer
+    modified_agent_row <- sample_peer(agent_row)
+    
+    # assign agent to original data frame 
+    agents[i, "sampled_agent"] <- modified_agent_row$sampled_agent
+  }
+
+  # Peer function: altering perceptions of products based on means 
+   for (i in 1:nrow(agents)) {
+  agents[i, ] <- peer_factor(agents[i, ], agents, scale_peer)
+   }
+  
+  
+ 
+  # Norm function: altering perceptions of products based on means
+  for (i in 1:nrow(agents)) {
+    agents[i, ] <- norm_factor(agents[i, ])
+  }
+  
+  # Store utilities in list: 
+    for (i in 1:nrow(agents)) {
+    # Store utility values in lists
+    utility_dairy_list[[i]] <- c(utility_dairy_list[[i]], agents$utility_dairy[i])
+    utility_vegan_list[[i]] <- c(utility_vegan_list[[i]], agents$utility_vegan[i])
+  }
+
+  # Decision function based on utilities and add to memory 
+  for (i in 1:nrow(agents)) {
+    # Decision using the decision function
+    if (iteration == 1) {
+      agents$decision[i] <- agents$milk[i]
+    } else {
+      agents$decision[i] <- decision(agents[i, ])
+    }
+  }
+  
+  # Count vegans
+  num_vegans <- c(num_vegans, sum(agents$decision))
+}
+
+
+### RESULTS FROM 3rd RUN
+# Save results from this simulation with new names 
+agent_3 <- agents
+mean_values_3 <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans_3 <- num_vegans
+price_development_3 <- price_development
+utility_vegan_list_3 <- utility_vegan_list
+utility_dairy_list_3 <- utility_dairy_list
+```
+
+# 4th - no intervention 
+```{r}
+# Reset 
+# A lot of lists for the means
+mean_values <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans <- c()
+price_development <- c()
+utility_vegan_list <- vector("list", nrow(agents))
+utility_dairy_list <- vector("list", nrow(agents))
+agents$memory <- vector("list", nrow(agents))
+initial_agents <- agents
+kr_dairy <- 14
+```
+
+# Run
+```{r}
+counter <- 0
+
+for (iteration in 1:num_iterations) {
+  counter <- counter + 1
+    
+    
+  # Get price difference  
+  price_diff <-  kr_dairy - kr_vegan
+  price_development <- c(price_development, price_diff)
+  
+  # DEFINE MEANS HERE SO THE UPDATED ONCE ARE TAKEN
+  mean_price <- mean(agents$weight_price)
+  mean_health <- mean(agents$weight_health)
+  mean_ethics <- mean(agents$weight_ethics)
+  mean_environment <- mean(agents$weight_environment)
+  mean_taste <- mean(agents$weight_taste)
+
+   
+  #### FUNCTIONS 
+    
+  # Utility function for vegan and dairy
+  for (i in 1:nrow(agents)) {
+    agents$utility_dairy[i] <- utility_dairy(agents[i, ])
+    agents$utility_vegan[i] <- utility_vegan(agents[i, ])
+  }
+
+  # Habit function
+  for (i in 1:nrow(agents)) {
+    # Call habit_effect function with memory_habit column
+    agent_utilities <- habit_effect(agents[i, ])
+    # Update utility_dairy and utility_vegan columns
+    agents[i, c("utility_dairy", "utility_vegan")] <- agent_utilities[1:2]
+  }
+
+  # Peer function: sampling one neighbor from the network
+  for (i in 1:nrow(agents)) {
+    # get the current agent row
+    agent_row <- agents[i, ]
+    
+    # sample_peer
+    modified_agent_row <- sample_peer(agent_row)
+    
+    # assign agent to original data frame 
+    agents[i, "sampled_agent"] <- modified_agent_row$sampled_agent
+  }
+
+  # Peer function: altering perceptions of products based on means 
+   for (i in 1:nrow(agents)) {
+  agents[i, ] <- peer_factor(agents[i, ], agents, scale_peer)
+   }
+  
+  
+ 
+  # Norm function: altering perceptions of products based on means
+  for (i in 1:nrow(agents)) {
+    agents[i, ] <- norm_factor(agents[i, ])
+  }
+  
+  # Store utilities in list: 
+    for (i in 1:nrow(agents)) {
+    # Store utility values in lists
+    utility_dairy_list[[i]] <- c(utility_dairy_list[[i]], agents$utility_dairy[i])
+    utility_vegan_list[[i]] <- c(utility_vegan_list[[i]], agents$utility_vegan[i])
+  }
+
+  # Decision function based on utilities and add to memory 
+  for (i in 1:nrow(agents)) {
+    # Decision using the decision function
+    if (iteration == 1) {
+      agents$decision[i] <- agents$milk[i]
+    } else {
+      agents$decision[i] <- decision(agents[i, ])
+    }
+  }
+  
+  # Count vegans
+  num_vegans <- c(num_vegans, sum(agents$decision))
+}
+
+
+### RESULTS FROM 3rd RUN
+# Save results from this simulation with new names 
+agent_0 <- agents
+mean_values_0 <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans_0 <- num_vegans
+price_development_0 <- price_development
+utility_vegan_list_0 <- utility_vegan_list
+utility_dairy_list_0 <- utility_dairy_list
+```
+
+
+# 5th exploration
+```{r}
+# Reset 
+# A lot of lists for the means
+mean_values <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans <- c()
+price_development <- c()
+utility_vegan_list <- vector("list", nrow(agents))
+utility_dairy_list <- vector("list", nrow(agents))
+agents$memory <- vector("list", nrow(agents))
+initial_agents <- agents
+kr_dairy <- 14
+```
+
+# Run
+```{r}
+counter <- 0
+
+for (iteration in 1:num_iterations) {
+  counter <- counter + 1
+    
+    ### ADD INTERVENTION HERE 
+   kr_dairy <- kr_dairy +0.1
+  
+  
+  # Get price difference  
+  price_diff <-  kr_dairy - kr_vegan
+  price_development <- c(price_development, price_diff)
+  
+  # DEFINE MEANS HERE SO THE UPDATED ONCE ARE TAKEN
+  mean_price <- mean(agents$weight_price)
+  mean_health <- mean(agents$weight_health)
+  mean_ethics <- mean(agents$weight_ethics)
+  mean_environment <- mean(agents$weight_environment)
+  mean_taste <- mean(agents$weight_taste)
+
+   
+  #### FUNCTIONS 
+    
+  # Utility function for vegan and dairy
+  for (i in 1:nrow(agents)) {
+    agents$utility_dairy[i] <- utility_dairy(agents[i, ])
+    agents$utility_vegan[i] <- utility_vegan(agents[i, ])
+  }
+
+  # Habit function
+  for (i in 1:nrow(agents)) {
+    # Call habit_effect function with memory_habit column
+    agent_utilities <- habit_effect(agents[i, ])
+    # Update utility_dairy and utility_vegan columns
+    agents[i, c("utility_dairy", "utility_vegan")] <- agent_utilities[1:2]
+  }
+
+  # Peer function: sampling one neighbor from the network
+  for (i in 1:nrow(agents)) {
+    # get the current agent row
+    agent_row <- agents[i, ]
+    
+    # sample_peer
+    modified_agent_row <- sample_peer(agent_row)
+    
+    # assign agent to original data frame 
+    agents[i, "sampled_agent"] <- modified_agent_row$sampled_agent
+  }
+
+  # Peer function: altering perceptions of products based on means 
+   for (i in 1:nrow(agents)) {
+  agents[i, ] <- peer_factor(agents[i, ], agents, scale_peer)
+   }
+  
+  
+ 
+  # Norm function: altering perceptions of products based on means
+  for (i in 1:nrow(agents)) {
+    agents[i, ] <- norm_factor(agents[i, ])
+  }
+  
+  # Store utilities in list: 
+    for (i in 1:nrow(agents)) {
+    # Store utility values in lists
+    utility_dairy_list[[i]] <- c(utility_dairy_list[[i]], agents$utility_dairy[i])
+    utility_vegan_list[[i]] <- c(utility_vegan_list[[i]], agents$utility_vegan[i])
+  }
+
+  # Decision function based on utilities and add to memory 
+  for (i in 1:nrow(agents)) {
+    # Decision using the decision function
+    if (iteration == 1) {
+      agents$decision[i] <- agents$milk[i]
+    } else {
+      agents$decision[i] <- decision(agents[i, ])
+    }
+  }
+  
+  # Count vegans
+  num_vegans <- c(num_vegans, sum(agents$decision))
+}
+
+
+### RESULTS FROM 3rd RUN
+# Save results from this simulation with new names 
+agent_5 <- agents
+mean_values_5 <- list(
+  weight_taste = numeric(),
+  weight_health = numeric(),
+  weight_ethics = numeric(),
+  weight_price = numeric(),
+  weight_environment = numeric()
+)
+num_vegans_5 <- num_vegans
+price_development_5 <- price_development
+utility_vegan_list_5 <- utility_vegan_list
+utility_dairy_list_5 <- utility_dairy_list
+```
+
+
+# Some plots
+```{r}
+# Vegans
+vegans_percentage <- (num_vegans_5 / length(agents$name)) * 100
+vegans_df <- data.frame(iteration = 1:length(vegans_percentage), vegans_percentage = vegans_percentage)
+price_development_5 <- (price_development_5)/(price_development_5+14+14) # the the % difference
+
+```
+
+```{r}
+
+palette <-c('#33576E', '#BBCF9B', '#C7DBE2', '#498B6D')
+
+labels <-  c("% Vegans", "Affordabiliity", "Environmental concern")
+
+# Same with liine graphs 
+ggplot(vegans_df, aes(x=iteration)) +
+  geom_line(aes(y=vegans_percentage), size=1, color= '#33576E', alpha = 0.9) + 
+   geom_line(aes(y=price_development_5*100), size=0.8, color='#498B6D') +
+  scale_y_continuous(
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~./100, name= "Relative price of dairy milk")
+  ) + 
+  labs(
+    x = "Iteration",
+    y = "Vegan milk consumers (%)",
+    title = "Simulation results",
+    subtitle = "    Interventions: Continuous increase in milk prices", 
+
+    color = "Variable"
+  ) +
+  theme(
+    legend.position = "bottom",
+    axis.title.y.right = element_text(colour="black"))+
+    theme_ipsum()+ 
+    annotate("text", label = "% vegans",  x = 100, y = 65, size = 4, colour = "#33576E", family = "mono")+
+    annotate("text", label = "Price", x = 100, y = 21, size = 4, colour = "#498B6D", family = "mono")
+
+# '#33576E', '#BBCF9B' '#C7DBE2', '#498B6D'
+
+```
+
+
+# Saving and data handling
+```{r}
+# Adding intervention
+agent_3$intervention <- 3
+agent_2$intervention <- 2
+agent_1$intervention <- 1
+agent_0$intervention <- 0
+
+
+# Extracting the 'decision', 'name', and 'intervention' columns for each dataframe
+agents_3_decisions <- agent_3[, c("decision", "name", "intervention")]
+agents_2_decisions <- agent_2[, c("decision", "name", "intervention")]
+agents_1_decisions <- agent_1[, c("decision", "name", "intervention")]
+agents_0_decisions <- agent_0[, c("decision", "name", "intervention")]
+
+# Binding the results together
+all_agents_decisions <- rbind(agents_0_decisions, agents_1_decisions, agents_2_decisions, agents_3_decisions)
+
+# Saving the combined data frame to a file
+write.csv(all_agents_decisions, "all_agents_decisions.csv", row.names = FALSE)
+
+# write the last one gradual results
+gradual_df <- cbind(num_vegans_5, price_development)
+write.csv(gradual_df, "gradual_df.csv", row.names = FALSE)
+```
+
+
+

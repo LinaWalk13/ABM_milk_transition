@@ -1,0 +1,342 @@
+---
+title: "Analysis_ABM"
+author: "Lina Walkowiak"
+date: "2024-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Download packages
+
+```{r}
+pacman::p_load(hrbrthemes, tidyverse, dplyr, dagitty, caret, pacman, rmarkdown, knitr)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(magrittr, dplyr, purrr, forcats, tidyr, modelr, tidybayes, tidybayes.rethinking,
+               ggplot2, cowplot, rstan,  ggrepel, RColorBrewer, gganimate, brms)
+```
+
+```{r}
+data <- read.csv("/Users/lina/Documents/4thsemester/dynamics/all_things_exam/sim_data2.csv")
+```
+
+```{r}
+data$name <- as.integer(factor(data$name)) 
+data$intervention <- as.integer(data$intervention+1)
+# 0 no interevention
+# 3 +6 taxes
+# 2 +4 taxes
+# 1 +2 taxes
+
+
+dat_list <- list(
+  agent = data$name,
+  decision = data$decision,
+  intervention = data$intervention
+)
+
+# MODEL
+# Fit the model
+model <- ulam(
+  alist(
+    decision ~ dbinom(1, p), 
+    logit(p) <- a[agent] + b[intervention], 
+    a[agent] ~ dnorm(0, 1),
+    b[intervention] ~ dnorm(0, 1)
+  ), 
+  data = dat_list, 
+  chains = 4, 
+  cores = 4, 
+  log_lik = TRUE
+)
+
+# Summarize the model
+model_summary <- precis(model, depth = 2)
+
+# Convert summary to data frame
+summary_df <- as.data.frame(model_summary)
+
+library(xtable)
+xt = xtable(summary_df)
+print(xt, 
+      tabular.environment = "longtable",
+      floating = FALSE
+      )
+
+
+```
+
+```{r}
+
+# Select the all agents
+selected_agents <- 1:61
+
+# Simulate data for posterior predictions for all four interventions for the selected agents
+dat_list <- lapply(1:4, function(i) list(agent=selected_agents, intervention=rep(i, length(selected_agents))))
+logit_posts <- lapply(dat_list, function(dat) link(model, data=dat, n=1e4))
+
+# Calculate mean logit probabilities and credible intervals for all interventions
+logit_mu <- sapply(logit_posts, function(post) apply(post, 2, mean))
+ci_logit <- lapply(logit_posts, function(post) apply(post, 2, function(x) HPDI(x, prob=0.95)))
+
+# Convert to data frame for plotting
+logit_df <- data.frame(
+  agent = rep(selected_agents, each=4),
+  intervention = rep(1:4, times=length(selected_agents)),
+  logit_mu = as.vector(logit_mu),
+  lower = unlist(lapply(ci_logit, function(ci) ci[1, ])),
+  upper = unlist(lapply(ci_logit, function(ci) ci[2, ]))
+)
+
+# Adjust x-axis positions for interventions with more spread
+logit_df$x <- rep(1:length(selected_agents), each=4) + rep(seq(-0.3, 0.3, length.out=4), times=length(selected_agents))
+
+# Define the color palette
+palette <- c('#33576E', '#BBCF9B', '#C7DBE2', '#498B6D')
+
+# Plot the results
+plot(NULL, xlim=c(0.5, length(selected_agents) + 0.5), ylim=c(min(logit_df$lower), max(logit_df$upper)), 
+     xlab="Agent", ylab="Logit Probability", xaxt="n", yaxt="n")
+axis(1, at=1:length(selected_agents), labels=selected_agents, las=2)
+axis(2, at=seq(min(logit_df$lower), max(logit_df$upper), length.out=5))
+abline(h=0, lty=2)
+
+# Add error bars, points, and lines connecting points for each agent
+for (i in selected_agents) {
+  agent_data <- subset(logit_df, agent == i)
+  for (j in 1:4) {
+    points(agent_data$x[j], agent_data$logit_mu[j], pch=16, col=palette[j])
+    arrows(x0=agent_data$x[j], y0=agent_data$lower[j], 
+           x1=agent_data$x[j], y1=agent_data$upper[j], 
+           angle=90, code=3, length=0.05, col=palette[j])
+  }
+  lines(agent_data$x, agent_data$logit_mu, col="gray")
+}
+
+# Optional: add labels or additional text
+# text(x, y, labels, pos, cex) can be used to add text if needed
+
+
+```
+
+# Model plots
+
+```{r}
+post <- extract.samples(model)
+intervention <- inv_logit( post$b )
+intervention_0 <- intervention[,1]
+intervention_1 <- intervention[,2]
+intervention_2 <- intervention[,3]
+intervention_3 <- intervention[,4]
+
+contrast_1 <- intervention[,2] - intervention[,1]
+contrast_2 <- intervention[,3] - intervention[,1]
+contrast_3 <- intervention[,4] - intervention[,1]
+
+# some plotting 
+plot( precis( as.data.frame(intervention) ) , xlim=c(0,1), main ="Intervention effects" ) 
+precis(as.data.frame(intervention), xlim=c(0,1), main ="Intervention effects" ) 
+
+# Load necessary packages
+library(gt)
+
+
+# Create a data frame with the summary statistics
+summary_data <- data.frame(
+  Variable = c("Baseline", "+2%", "+4%", "+6%"),
+  Mean = c(0.2, 0.2, 0.2, 0.2),
+  SD = c(0.05, 0.06, 0.05, 0.05),
+  Percentile_5.5 = c(0.12, 0.12, 0.12, 0.12),
+  Percentile_94.5 = c(0.29, 0.29, 0.29, 0.29),
+  Histogram = c("▁▃▇▇▂▁▁▁", "▁▃▇▅▂▁▁▁", "▁▃▇▅▂▁▁▁", "▁▃▇▅▂▁▁▁")
+)
+
+# Set the color palette
+my_palette <-  '#BBCF9B' #'#C7DBE2' #'#498B6D'
+
+# Create a nice table using gt
+summary_data %>%
+  gt() %>%
+  tab_header(
+    title = "Posterior estimates"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = my_palette[1]),
+    locations = cells_body()
+  ) %>%
+  tab_style(
+    style = cell_text(color = "white"),
+    locations = cells_body()
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  )
+
+
+```
+
+```{r}
+library(ridgeline)
+library(ggridges)
+palette <- c('#33576E', '#BBCF9B', '#498B6D', '#C7DBE2')
+
+# In nicer format
+intervention_df <- data.frame(
+  intervention_0 = intervention_0,
+  intervention_1 = intervention_1,
+  intervention_2 = intervention_2,
+  intervention_3 = intervention_3
+)
+
+contrast_df <- data.frame(
+  contrast_1 = contrast_1,
+  contrast_2 = contrast_2,
+  contrast_3 = contrast_3
+)
+
+intervention_long <- pivot_longer(intervention_df, everything(), names_to = "intervention", values_to = "estimate")
+contrast_long <- pivot_longer(contrast_df, everything(), names_to = "contrast", values_to = "estimate")
+
+
+
+# First plot
+ridgeline(intervention_long$estimate, intervention_long$intervention, 
+          palette = palette,
+          border = palette, 
+          labels = c("No Tax", "+2%", "+4%", "+6%"), 
+          main = "Posterior Estimates: Intervention Effects")
+# Labels 
+intervention_labels <- c( "+2%", "+4%", "+6%")
+
+# Create ggplot
+ggplot(contrast_long, aes(x = estimate, y = contrast, fill = contrast)) + 
+  geom_density_ridges(scale = 1) +
+  scale_fill_manual(values = palette) +
+  labs(title = "Posterior Estimates: Intervention Effects",
+       x = "Posterior Estimate",
+       y = "Intervention") +
+  scale_y_discrete(labels = intervention_labels) +  
+  theme_ipsum() +
+  theme(legend.position = "none")
+
+# Plot
+# Create ggplot
+ggplot(contrast_long, aes(x = estimate, color = contrast)) + 
+  geom_density(alpha = 0.2) +
+  #scale_fill_manual(values = palette) +
+  scale_color_manual(values = palette, labels = c("+2%", "+4%", "+6%")) +
+  labs(title = "",
+       subtitle = "Contrasts between intervention and baseline on the probability scale",
+       x = "Posterior Estimate",
+       y = "Density",
+       fill = "Intervention",
+       color = "Intervention") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_ipsum() +
+  theme(legend.position = "right")
+
+
+
+
+```
+
+
+# Exploration
+
+```{r}
+exp <- read.csv("/Users/lina/Documents/4thsemester/dynamics/all_things_exam/gradual_df_3.csv")
+exp$iteration <- 1:293
+exp$price_development <- (price_development_5+14 /14) -1
+exp$per_vegans <- exp$num_vegans_5/61*100
+
+```
+
+```{r}
+
+# Find the iterations where per_vegans is 50, 75, and the max per_vegans
+iteration_50 <- exp$iteration[which.min(abs(exp$per_vegans - 50))]
+iteration_75 <- exp$iteration[which.min(abs(exp$per_vegans - 75))]
+iteration_max <- exp$iteration[which.max(exp$per_vegans)]
+
+# Extract the corresponding y-values
+y_price_50 <- exp$price_development[which.min(abs(exp$per_vegans - 50))] * 100
+y_price_75 <- exp$price_development[which.min(abs(exp$per_vegans - 75))] * 100
+y_price_max <- exp$price_development[which.max(exp$per_vegans)] * 100
+
+# Extract the y-values for the vegan milk consumers
+y_vegans_50 <- exp$per_vegans[which.min(abs(exp$per_vegans - 50))]
+y_vegans_75 <- exp$per_vegans[which.min(abs(exp$per_vegans - 75))]
+y_vegans_max <- exp$per_vegans[which.max(exp$per_vegans)]
+
+# Plotting
+ggplot(exp, aes(x=iteration)) +
+  geom_line(aes(y=per_vegans), size=1, color='#33576E', alpha=0.9) + 
+  geom_line(aes(y=price_development*100), size=0.8, color='#498B6D') +
+  scale_y_continuous(
+    sec.axis = sec_axis(~./100, name= "Relative price of dairy milk")
+  ) + 
+  labs(
+    x = "Iteration",
+    y = "Vegan milk consumers (%)",
+    title = " ",
+    subtitle = "Percentage of vegans over time (continuous increase of dairy price)",
+    color = "Variable"
+  ) +
+  theme(
+    legend.position = "bottom",
+    axis.title.y.right = element_text(colour="black")
+  ) +
+  theme_ipsum() + 
+  annotate("text", label = "% vegans",  x = 130, y = 70, size = 4, colour = "#33576E", family = "mono") +
+  annotate("text", label = "Price", x = 130, y = 21, size = 4, colour = "#498B6D", family = "mono") +
+  geom_segment(aes(x=iteration_50, xend=iteration_50, y=y_price_50, yend=y_vegans_50), linetype="dashed") +
+  geom_segment(aes(x=iteration_75, xend=iteration_75, y=y_price_75, yend=y_vegans_75), linetype="dashed") +
+  geom_segment(aes(x=iteration_max, xend=iteration_max, y=y_price_max, yend=y_vegans_max), linetype="dashed") 
+
+
+```
+
+```{r}
+summary_data <- data.frame(
+  Iteration = c(iteration_50, iteration_75, iteration_max),
+  Relative_Price  = c(y_price_50, y_price_75, y_price_max),
+  Percentage_Vegans = c(y_vegans_50, y_vegans_75, y_vegans_max)
+)
+
+# Set the color palette
+my_palette <- '#BBCF9B'  
+
+# Create a nice table using gt
+summary_data %>%
+  gt() %>%
+  tab_header(
+    title = "Exploratory simulation"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = my_palette),
+    locations = cells_body()
+  ) %>%
+  tab_style(
+    style = cell_text(color = "white"),
+    locations = cells_body()
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  )
+```
+
+```{r}
+# Survey data for calculations
+data <- read.csv("/Users/lina/Documents/4thsemester/dynamics/all_things_exam/data1/dataset.csv")
+df <- data[,-c(1,2, 6, 34:43) ]
+df <- na.omit(df)
+
+sum(df$dairymilk_week+df$plantmilk_week)/length(df$dairymilk_week)*52
+sum(df$dairymilk_week)/length(df$dairymilk_week)*52
+sum(df$plantmilk_week)/length(df$dairymilk_week)*52
+
+```
